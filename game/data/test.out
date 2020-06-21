@@ -1,0 +1,181 @@
+/* ================================================================
+   by Jonathan Nunez
+   
+
+
+   ================================================================ */
+
+#include "game.h"
+
+internal void
+GameOutputSound(game_state *GameState, game_sound_buffer *SoundBuffer, int ToneHz)
+{
+    s16 ToneVolume = 3000;
+    int WavePeriod = SoundBuffer->SamplesPerSecond/ToneHz;
+
+    s16 *SampleOut = SoundBuffer->Samples;
+    for(int SampleIndex = 0; SampleIndex < SoundBuffer->SampleCount; ++SampleIndex)
+    {
+
+#if 0        
+        f32 SineValue   = sinf(GameState->tSine);
+        s16 SampleValue = (s16)(SineValue * ToneVolume);
+#else
+        s16 SampleValue = 0;
+#endif
+        
+        *SampleOut++ = SampleValue;
+        *SampleOut++ = SampleValue;
+
+        GameState->tSine += 2.0f*Pi32*1.0f/(f32)WavePeriod;
+        if(GameState->tSine > 2.0f*Pi32)
+        {
+            GameState->tSine -= 2.0f*Pi32;
+        }
+    }
+}
+
+internal void
+RenderGradient(game_offscreen_buffer *Buffer, int XOffset, int YOffset)
+{
+    // NOTE(JN): Row points to the first pixel in the buffer. Row is 8
+    // bits wide because pitch is also measured in bytes.
+    u8 *Row = (u8 *)Buffer->Memory;    
+    for(int Y = 0; Y < Buffer->Height;++Y)
+    {
+        u32 *Pixel = (u32 *)Row;
+        for(int X = 0; X < Buffer->Width; ++X)
+        {
+            // NOTE(JN): The 256x256 blocks in the gradient animation are due to
+            // the 8 bits colors overflowing.
+            u8 Blue  = (u8)(X + XOffset);
+            u8 Red   = (u8)(Y + YOffset);
+
+            // NOTE(JN): *Pixel = x; *Pixel = *Pixel + 1*sizeof(u32);
+            *Pixel++ = ((Red << 16) | Blue);
+        }
+
+        Row += Buffer->Pitch;
+    }
+}
+
+internal void
+RenderPlayer(game_offscreen_buffer *Buffer, int PlayerX, int PlayerY)
+{
+    u8 *EndOfBuffer = (u8 *)Buffer->Memory + Buffer->Pitch*Buffer->Height;
+    u32 Color  = 0xFFFFFFFF;
+    int Top    = PlayerY;
+    int Bottom = PlayerY+10;
+
+    for (int X = PlayerX; X < PlayerX+10; ++X)
+    {
+        u8 *Pixel = ((u8 *)Buffer->Memory +
+                     X*Buffer->BytesPerPixel +
+                     Top*Buffer->Pitch); 
+
+        for(int Y  = Top; Y < Bottom; ++Y)
+        {
+            if((Pixel >= Buffer->Memory) && ((Pixel+4) <= EndOfBuffer))
+            {
+                *(u32 *)Pixel = Color;
+            }
+
+            Pixel += Buffer->Pitch;
+        }
+    }
+
+}
+
+extern "C" GAME_UPDATE_AND_RENDER(GameUpdateAndRender)
+{
+    Assert(sizeof(game_state) <= Memory->PermanentStorageSize);
+    
+    game_state *GameState = (game_state *)Memory->PermanentStorage;
+    if(!Memory->IsInitialized)
+    {
+        char *FileName = __FILE__;
+        debug_read_file_result File  = Memory->DEBUGPlatformReadEntireFile(Thread, FileName);
+        if(File.Content)
+        {
+            Memory->DEBUGPlatformWriteEntireFile(Thread, "v:/game/game/data/test.out", File.ContentSize, File.Content);
+            Memory->DEBUGPlatformFreeFileMemory(Thread, File.Content);  
+        };
+        
+        GameState->ToneHz = 256;
+        GameState->tSine  = 0.0f;
+
+        GameState->PlayerX = 100;
+        GameState->PlayerY = 100;
+        
+        Memory->IsInitialized = true;
+    }
+
+    for(int ControllerIndex = 0; ControllerIndex < ArrayCount(Input->Controllers); ++ControllerIndex)
+    {
+        game_controller_input *Controller = GetController(Input, ControllerIndex);    
+        if(Controller->IsAnalog)
+        {
+            // NOTE(JN): Use analog movement.
+            GameState->XOffset += (int)(4.0f*(Controller->StickAverageX));
+            GameState->YOffset -= (int)(4.0f*(Controller->StickAverageY));
+
+            GameState->ToneHz = 256 + (int)(128.0f*(Controller->StickAverageY));
+        }
+        else
+        {
+            // NOTE(JN): Use digital movement.
+            if(Controller->MoveLeft.EndedDown)
+            {
+                GameState->XOffset -= 1;
+            }
+            if(Controller->MoveRight.EndedDown)
+            {
+                GameState->XOffset += 1;
+            }
+        }
+
+        // Input.AButtonEndedDown;
+        // Input.AButtonHalfTransitionCount;
+
+        if(Controller->MoveUp.EndedDown)
+        {
+            GameState->YOffset -= 1;
+        }
+        if(Controller->MoveDown.EndedDown)
+        {
+            GameState->YOffset += 1;
+        }
+        if(Controller->Start.EndedDown)
+        {
+            //GlobalRunning = false;
+        }
+
+        GameState->PlayerX  += (int)(4.0f*Controller->StickAverageX);
+        GameState->PlayerY  -= (int)(4.0f*Controller->StickAverageY);
+
+        if(GameState->tJump > 0)
+        {
+            GameState->PlayerY += (int)(5.0f*sinf(2.0f*Pi32*GameState->tJump));
+        }
+        
+        if(Controller->Action3.EndedDown)
+        {
+            GameState->tJump = 1.0;
+        }
+        GameState->tJump -= 0.033f;
+    }
+    
+    RenderGradient(Buffer, GameState->XOffset, GameState->YOffset);
+
+    RenderPlayer(Buffer, GameState->PlayerX, GameState->PlayerY);
+
+    RenderPlayer(Buffer, Input->MouseX, Input->MouseY);
+
+}
+
+extern "C" GAME_GET_SOUND_SAMPLES(GameGetSoundSamples)
+{
+    game_state *GameState = (game_state *)Memory->PermanentStorage;
+    GameOutputSound(GameState, SoundBuffer, GameState->ToneHz);
+    
+}
